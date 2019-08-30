@@ -6,7 +6,7 @@ __pycache__/
 *$py.class
 .idea/
 .DS_Store
-
+venv
 # C extensions
 *.so
 

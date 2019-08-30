@@ -51,6 +51,7 @@ class Combination(object):
         for item in self.combine_data():
             self.guahao.update_one({'name': item['name'], 'link': item['link']}, {"$set": dict(item)}, upsert=True)
             print(item)
+        print("\n========================================================\n")
 
 
 if __name__ == '__main__':

@@ -1,46 +1,41 @@
 import os
 import time
-from datetime import datetime
 import execjs
 import pymongo
 import difflib
 import requests
-from lxml import etree
 
+from datetime import datetime
 from config import *
 
 
 class CrawlGuaHao(object):
     """
-    模拟登录114yygh网站，从本地mongodb获取link，提取挂号信息，存入MySql
+    模拟登录114yygh网站，从本地mongodb:department获取肾内科科室link，
+    提取医生挂号信息，存入outpatient集合
     """
 
     def __init__(self):
         self.client = pymongo.MongoClient(MONGO_URL, MONGO_PORT)
         self.db = self.client[MONGO_DB]
-        self.departments = self.db['departments']
+        self.departments = self.db['departments']  # 读取科室url
 
-        self.outpatient = self.db['outpatient']
+        self.outpatient = self.db['outpatient']  # 存处医生挂号信息
 
-        self.login_url = 'http://www.114yygh.com/account/loginStep1.htm'
-        self.post_url = 'http://www.114yygh.com/account/loginStep2.htm'
-        requests.adapters.DEFAULT_RETRIES = 5
+        self.login_url = 'http://www.114yygh.com/web/login/verify.htm'
+        self.post_url = 'http://www.114yygh.com/web/login/doLogin.htm'
+        # requests.adapters.DEFAULT_RETRIES = 5
         self.session = requests.Session()
         self.session.adapters.DEFAULT_RETRIES = 5
         # self.session.keep_alive = False
-
-    def token(self):
-        """
-        获取表单信息
-        :return: list
-        """
-        post_data = {
-            'mobileNo': PHONE,
+        self.headers = {
+            'Host': 'www.114yygh.com',
+            'Origin': 'http://www.114yygh.com',
+            'Proxy-Connection': 'keep-alive',
+            'Referer': 'http://www.114yygh.com/web/login/step.htm',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36',
+            'X-Requested-With': 'XMLHttpRequest'
         }
-        response = self.session.post(self.login_url, data=post_data)
-        selector = etree.HTML(response.text)
-        token = selector.xpath('//*[@id="loginStep2_pwd_form"]/input/@value')
-        return token
 
     def password(self):
         """
@@ -53,18 +48,16 @@ class CrawlGuaHao(object):
         return ctx
 
     def login(self):
-        resp = self.token()
         post_data = {
-            'token': resp[0],
-            'mobileNo': resp[1],
-            'smsType': resp[2],
-            'loginType': resp[3],
-            'redirectUrl': resp[4],
-            'password': self.password()
+            'mobileNo': os.getenv('PHONE'),
+            'password': os.getenv('PASSWD'),
+            'loginType': 'PASSWORD_LOGIN',
+            'redirectUrl': '/index.htm'
         }
-        response = self.session.post(self.post_url, data=post_data)
+        response = self.session.post(self.post_url, headers=self.headers, data=post_data)
         if response.status_code == 200:
-            print('Login Successfully!')
+            print('Login Successfully!', end=',')
+            print(response.text)
         else:
             print('Login Failed!')
 
@@ -84,14 +77,13 @@ class CrawlGuaHao(object):
         """
         url = 'http://www.114yygh.com/dpt/build/duty.htm'
         json = self.get_data(url, **kwargs)
-        time.sleep(0.3)  # 等待网页加载
+        time.sleep(0.4)  # 等待网页加载
         try:
             data = json.get('data')
             for value in data.values():
                 for i in value:
                     ratio = difflib.SequenceMatcher(None, i['doctorName'], i['doctorTitleName']).quick_ratio()
-                    if (ratio < 0.4 and (i['doctorName'] not in '医生普通号肾内科主治医师肾性高血压门诊')) or \
-                            '康志敏' in i['doctorName']:
+                    if ratio < 0.4 and (i['doctorName'] not in '医生普通号肾内科主治医师肾性高血压门诊'):
                         yield {
                             'doctorName': i['doctorName'],
                             'doctorTitleName': i['doctorTitleName'],
@@ -102,10 +94,10 @@ class CrawlGuaHao(object):
                                                        'getTime': datetime.now().strftime('%Y-%m-%d %H:%M')}],
                             'hospId': '-'.join([kwargs['hospitalId'], kwargs['departmentId']])
                         }
-                    else:
-                        print(i['doctorName'], i['doctorTitleName'])
+                    # else:
+                    #     print(i['doctorName'], i['doctorTitleName'])
         except Exception as e:
-            print('registered:', repr(e), json)
+            print('registered_info:', repr(e), json)
             self.session.keep_alive = False
             time.sleep(3)  # 休息一下
             self.login()
@@ -120,9 +112,9 @@ class CrawlGuaHao(object):
         url = 'http://www.114yygh.com/dpt/week/calendar.htm'
         week = 1
         while True:
+            json = self.get_data(url, week=week, **kwargs)
+            time.sleep(0.4)  # 等待网页加载
             try:
-                json = self.get_data(url, week=week, **kwargs)
-                time.sleep(0.3)  # 等待网页加载
                 for item in json['dutyCalendars']:
                     if item.get('remainAvailableNumber') != -1:
                         date = item.get('dutyDate')
@@ -139,7 +131,9 @@ class CrawlGuaHao(object):
                 else:
                     break
             except Exception as e:
-                print('index:', repr(e))
+                print('index:', repr(e), json)
+                time.sleep(1)
+                self.parse_index_info(**kwargs)
 
     def save_to_mongo(self, result):
         query = {'doctorName': result['doctorName'], 'dutyDate': result['dutyDate']}
@@ -159,8 +153,10 @@ class CrawlGuaHao(object):
             print(link)
             Id = link.replace('.htm', '').split('/')[-1].split('-')  # 提取医院和科室的id
             self.parse_index_info(hospitalId=Id[0], departmentId=Id[1])
+        print("\n====================================================\n")
 
 
 if __name__ == '__main__':
     crawler = CrawlGuaHao()
+    # crawler.login()
     crawler.main()

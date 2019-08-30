@@ -3,4 +3,5 @@ MONGO_URL = 'localhost'
 MONGO_PORT = 27017
 MONGO_DB = 'kidney'
 
-PHONE = ''
+BACKUP_MONGO_URL = '10.0.31.20'
+BACKUP_MONGO_DB = 'backup'
